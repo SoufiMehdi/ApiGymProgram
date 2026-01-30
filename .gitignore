@@ -1,0 +1,46 @@
+# Environnement virtuel
+venv/
+env/
+ENV/
+.venv
+
+# Variables d'environnement
+.env
+*.env
+!.env.example
+
+# Base de données SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution
+build/
+dist/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
