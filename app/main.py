@@ -1,5 +1,5 @@
 import datetime
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -8,11 +8,13 @@ from typing import Optional, List
 
 from app.database import engine, get_db
 from app.Models.Exercise import Base, Exercise
-from app.Models.program import  Programme
-from app.Models.TrainingCycle  import TrainingCycle
-from app.ia import generer_programme
+from app.Models.program import Programme
+from app.Models.TrainingCycle import TrainingCycle
 from app.Service.ExercisedbService import (
+    get_today_workout,
     get_exercises_by_muscle,
+    get_cycle_for_date,
+    TRAINING_CYCLES
 )
 
 # Créer les tables
@@ -20,7 +22,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Iron Pulse API",
-    description="API de génération de programmes d'entraînement avec IA Et ExerciceDB",
+    description="API de génération de programmes d'entraînement avec IA et ExerciseDB",
     version="3.0.0"
 )
 
@@ -35,17 +37,11 @@ app.add_middleware(
 
 # Servir les médias statiques
 import os
+
 os.makedirs("media/gifs", exist_ok=True)
 os.makedirs("media/videos", exist_ok=True)
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-# Schémas Pydantic
-class ProgrammeRequest(BaseModel):
-    groupes: str
-    objectif: str = "prise de masse"
-    niveau: str = "intermédiaire"
-    duree: int = 45
-    ia: str = "gemini"  # "gemini" ou "claude"
 
 # Schémas Pydantic
 class ExerciseResponse(BaseModel):
@@ -63,34 +59,13 @@ class ExerciseResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class DailyWorkoutResponse(BaseModel):
     date: str
     cycle: str
     muscles: List[str]
     exercises: List[dict]
     total_exercises: int
-
-
-class ExerciceResponse(BaseModel):
-    nom: str
-    series: int
-    repetitions: str
-    repos_secondes: int
-    conseils: Optional[str] = None
-
-
-class ProgrammeResponse(BaseModel):
-    id: int
-    groupes: str
-    objectif: str
-    niveau: str
-    duree: int
-    ia: str
-    exercices: List[ExerciceResponse]
-    created_at: datetime.datetime
-
-    class Config:
-        from_attributes = True
 
 
 @app.get("/")
@@ -100,11 +75,10 @@ def root():
         "message": "🔥 Iron Pulse API v3.0 - ExerciseDB Integration",
         "version": "3.0.0",
         "endpoints": {
-            "create_programme": "POST /programme",
-            "get_programme": "GET /programme/{id}",
-            "list_programmes": "GET /programmes",
-            "health": "GET /health",
+            "daily_workout": "GET /workout/today",
             "sync_exercises": "POST /exercises/sync",
+            "get_exercises": "GET /exercises",
+            "health": "GET /health"
         }
     }
 
@@ -112,165 +86,97 @@ def root():
 @app.get("/health")
 def health():
     """Health check"""
-    return {"status": "healthy", "service": "Iron Pulse API"}
+    return {"status": "healthy", "service": "Iron Pulse API v3.0"}
 
 
-@app.post("/programme", response_model=ProgrammeResponse)
-def creer_programme(request: ProgrammeRequest, db: Session = Depends(get_db)):
+@app.get("/workout/today", response_model=DailyWorkoutResponse)
+def get_daily_workout(use_db: bool = False, db: Session = Depends(get_db)):
     """
-    Crée un nouveau programme d'entraînement
+    Récupère le programme d'entraînement du jour
+    Rotation automatique : dos/biceps → pecs/triceps → jambes/abdos
 
     Args:
-        request: Configuration du programme (groupes, objectif, niveau, durée, IA)
+        use_db: Si True, utilise les exercices en BDD avec sélection intelligente
+                Si False, récupère depuis l'API ExerciseDB (par défaut)
         db: Session de base de données
 
     Returns:
-        Programme créé avec tous les exercices
+        Programme du jour avec 4 exercices par muscle
     """
     try:
-        # Générer le programme avec l'IA choisie
-        programme_json = generer_programme(
-            groupes=request.groupes,
-            objectif=request.objectif,
-            niveau=request.niveau,
-            duree=request.duree,
-            ia=request.ia
-        )
+        if use_db:
+            # Mode intelligent : utiliser la BDD avec anti-répétition
+            from app.Service.WorkoutService import get_varied_workout
+            from app.Service.ExercisedbService import get_cycle_for_date, TRAINING_CYCLES
 
-        # Sauvegarder en base
-        programme = Programme(
-            groupes=request.groupes,
-            contenu=programme_json,
-            ia=request.ia,
-            created_at=datetime.datetime.now()
-        )
+            today = datetime.datetime.now()
+            cycle_name = get_cycle_for_date(today)
+            muscles = TRAINING_CYCLES[cycle_name]
 
-        db.add(programme)
-        db.commit()
-        db.refresh(programme)
-
-        # Retourner le programme formaté
-        return ProgrammeResponse(
-            id=programme.id,
-            groupes=programme.groupes,
-            objectif=programme_json.get("objectif", request.objectif),
-            niveau=programme_json.get("niveau", request.niveau),
-            duree=programme_json.get("duree", request.duree),
-            ia=programme.ia,
-            exercices=[ExerciceResponse(**ex) for ex in programme_json["exercices"]],
-            created_at=programme.created_at
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération: {str(e)}")
-
-
-@app.get("/programme/{programme_id}", response_model=ProgrammeResponse)
-def get_programme(programme_id: int, db: Session = Depends(get_db)):
-    """
-    Récupère un programme par son ID
-
-    Args:
-        programme_id: ID du programme
-        db: Session de base de données
-
-    Returns:
-        Programme complet
-    """
-    programme = db.query(Programme).filter(Programme.id == programme_id).first()
-
-    if not programme:
-        raise HTTPException(status_code=404, detail="Programme non trouvé")
-
-    contenu = programme.contenu
-
-    return ProgrammeResponse(
-        id=programme.id,
-        groupes=programme.groupes,
-        objectif=contenu.get("objectif", "non spécifié"),
-        niveau=contenu.get("niveau", "non spécifié"),
-        duree=contenu.get("duree", 0),
-        ia=programme.ia,
-        exercices=[ExerciceResponse(**ex) for ex in contenu["exercices"]],
-        created_at=programme.created_at
-    )
-
-
-@app.get("/programmes")
-def list_programmes(
-        skip: int = 0,
-        limit: int = 10,
-        groupes: Optional[str] = None,
-        ia: Optional[str] = None,
-        db: Session = Depends(get_db)
-):
-    """
-    Liste tous les programmes avec filtres optionnels
-
-    Args:
-        skip: Nombre de programmes à passer
-        limit: Nombre maximum de programmes à retourner
-        groupes: Filtrer par groupes musculaires
-        ia: Filtrer par IA utilisée ("gemini" ou "claude")
-        db: Session de base de données
-
-    Returns:
-        Liste de programmes
-    """
-    query = db.query(Programme)
-
-    if groupes:
-        query = query.filter(Programme.groupes.contains(groupes))
-
-    if ia:
-        query = query.filter(Programme.ia == ia)
-
-    programmes = query.order_by(Programme.created_at.desc()).offset(skip).limit(limit).all()
-
-    return {
-        "total": query.count(),
-        "skip": skip,
-        "limit": limit,
-        "programmes": [
-            {
-                "id": p.id,
-                "groupes": p.groupes,
-                "ia": p.ia,
-                "nb_exercices": len(p.contenu.get("exercices", [])),
-                "created_at": p.created_at
+            # Convertir les noms de muscles français en anglais
+            muscle_mapping = {
+                "dos": "back",
+                "biceps": "biceps",
+                "pectoraux": "chest",
+                "triceps": "triceps",
+                "jambes": "legs",
+                "abdos": "abs"
             }
-            for p in programmes
-        ]
-    }
+            muscles_en = [muscle_mapping.get(m, m) for m in muscles]
+
+            workout_data = get_varied_workout(db, muscles_en, exercises_per_muscle=4)
+
+            return {
+                "date": today.strftime("%Y-%m-%d"),
+                "cycle": cycle_name,
+                "muscles": muscles,
+                "exercises": workout_data["exercises"],
+                "total_exercises": workout_data["total_exercises"]
+            }
+        else:
+            # Mode normal : récupérer depuis l'API
+            workout = get_today_workout()
+            return workout
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
 
 
-@app.delete("/programme/{programme_id}")
-def delete_programme(programme_id: int, db: Session = Depends(get_db)):
+@app.get("/workout/cycle/{date}")
+def get_workout_for_date(date: str):
     """
-    Supprime un programme
+    Récupère le cycle d'entraînement pour une date donnée
 
     Args:
-        programme_id: ID du programme à supprimer
-        db: Session de base de données
+        date: Date au format YYYY-MM-DD
 
     Returns:
-        Message de confirmation
+        Informations sur le cycle du jour
     """
-    programme = db.query(Programme).filter(Programme.id == programme_id).first()
+    try:
+        target_date = datetime.datetime.strptime(date, "%Y-%m-%d")
+        cycle_name = get_cycle_for_date(target_date)
+        muscles = TRAINING_CYCLES[cycle_name]
 
-    if not programme:
-        raise HTTPException(status_code=404, detail="Programme non trouvé")
-
-    db.delete(programme)
-    db.commit()
-
-    return {"message": f"Programme {programme_id} supprimé avec succès"}
+        return {
+            "date": date,
+            "cycle": cycle_name,
+            "muscles": muscles,
+            "cycle_description": {
+                "dos_biceps": "Jour 1: Dos et Biceps",
+                "pecs_triceps": "Jour 2: Pectoraux et Triceps",
+                "jambes_abdos": "Jour 3: Jambes et Abdominaux"
+            }.get(cycle_name)
+        }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD")
 
 
 @app.post("/exercises/sync/{muscle}")
 def sync_exercises_for_muscle(
         muscle: str,
         limit: int = 4,
+        equipment: Optional[str] = None,
+        balanced: bool = True,
         db: Session = Depends(get_db)
 ):
     """
@@ -280,13 +186,23 @@ def sync_exercises_for_muscle(
     Args:
         muscle: Nom du muscle en français (dos, biceps, pectoraux, etc.)
         limit: Nombre d'exercices à récupérer (défaut: 4)
+        equipment: Filtrer par équipement (barbell, dumbbell, cable, etc.) - optionnel
+        balanced: Si True, utilise la sélection équilibrée (2 barbell + 2 dumbbell)
         db: Session de base de données
 
     Returns:
         Liste des exercices synchronisés
     """
     try:
-        exercises = get_exercises_by_muscle(muscle, limit)
+        from app.Service.ExercisedbService import get_balanced_exercises_by_muscle
+
+        if balanced:
+            # Mode équilibré (recommandé)
+            exercises = get_balanced_exercises_by_muscle(muscle, total=limit)
+        else:
+            # Mode manuel avec filtre d'équipement
+            equipment_list = equipment.split(',') if equipment else None
+            exercises = get_exercises_by_muscle(muscle, limit, equipment_filter=equipment_list)
 
         if not exercises:
             raise HTTPException(status_code=404, detail=f"Aucun exercice trouvé pour {muscle}")
@@ -302,6 +218,7 @@ def sync_exercises_for_muscle(
                 # Mettre à jour
                 existing.name_fr = ex['name_fr']
                 existing.gif_local_path = ex.get('gif_local_path', '')
+                existing.video_local_path = ex.get('video_local_path', '')
                 existing.updated_at = datetime.datetime.now()
                 db.commit()
                 saved_exercises.append(existing)
@@ -318,6 +235,8 @@ def sync_exercises_for_muscle(
                     instructions_fr='\n'.join(ex.get('instructions_fr', [])),
                     gif_url=ex.get('gif_url', ''),
                     gif_local_path=ex.get('gif_local_path', ''),
+                    video_url=ex.get('video_url', ''),
+                    video_local_path=ex.get('video_local_path', ''),
                     created_at=datetime.datetime.now(),
                     updated_at=datetime.datetime.now()
                 )
@@ -332,8 +251,9 @@ def sync_exercises_for_muscle(
                 {
                     "id": ex.id,
                     "name_fr": ex.name_fr,
+                    "equipment": ex.equipment,
                     "target_muscle": ex.target_muscle,
-                    'gif_url': ex.gif_url,
+                    "image": ex.gif_url
                 }
                 for ex in saved_exercises
             ]
@@ -343,7 +263,161 @@ def sync_exercises_for_muscle(
         raise HTTPException(status_code=500, detail=f"Erreur de synchronisation: {str(e)}")
 
 
+@app.post("/exercises/sync-all")
+def sync_all_exercises(db: Session = Depends(get_db)):
+    """
+    Synchronise tous les exercices pour tous les muscles du cycle
+
+    Returns:
+        Résumé de la synchronisation
+    """
+    all_muscles = []
+    for muscles in TRAINING_CYCLES.values():
+        all_muscles.extend(muscles)
+
+    # Supprimer les doublons
+    all_muscles = list(set(all_muscles))
+
+    results = []
+    for muscle in all_muscles:
+        try:
+            result = sync_exercises_for_muscle(muscle, limit=4, db=db)
+            results.append({
+                "muscle": muscle,
+                "count": len(result["exercises"]),
+                "status": "success"
+            })
+        except Exception as e:
+            results.append({
+                "muscle": muscle,
+                "error": str(e),
+                "status": "error"
+            })
+
+    total_synced = sum(r.get("count", 0) for r in results)
+
+    return {
+        "message": f"Synchronisation terminée: {total_synced} exercices",
+        "details": results
+    }
+
+
+@app.get("/exercises")
+def list_exercises(
+        muscle: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+        db: Session = Depends(get_db)
+):
+    """
+    Liste les exercices stockés en base de données
+
+    Args:
+        muscle: Filtrer par muscle cible
+        skip: Nombre à passer (pagination)
+        limit: Nombre maximum à retourner
+        db: Session de base de données
+
+    Returns:
+        Liste d'exercices
+    """
+    query = db.query(Exercise)
+
+    if muscle:
+        query = query.filter(Exercise.target_muscle.contains(muscle))
+
+    exercises = query.offset(skip).limit(limit).all()
+    total = query.count()
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "exercises": [
+            {
+                "id": ex.id,
+                "name_fr": ex.name_fr,
+                "name_en": ex.name_en,
+                "target_muscle": ex.target_muscle,
+                "equipment": ex.equipment,
+                "gif_local_path": ex.gif_local_path
+            }
+            for ex in exercises
+        ]
+    }
+
+
+@app.get("/exercises/{exercise_id}", response_model=ExerciseResponse)
+def get_exercise(exercise_id: int, db: Session = Depends(get_db)):
+    """
+    Récupère un exercice par son ID
+
+    Args:
+        exercise_id: ID de l'exercice
+        db: Session de base de données
+
+    Returns:
+        Détails complets de l'exercice
+    """
+    exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+
+    if not exercise:
+        raise HTTPException(status_code=404, detail="Exercice non trouvé")
+
+    return ExerciseResponse(
+        id=exercise.id,
+        exercise_id=exercise.exercise_id,
+        name_fr=exercise.name_fr,
+        name_en=exercise.name_en,
+        body_part=exercise.body_part,
+        target_muscle=exercise.target_muscle,
+        equipment=exercise.equipment,
+        instructions_fr=exercise.instructions_fr.split('\n') if exercise.instructions_fr else [],
+        gif_url=exercise.gif_url,
+        gif_local_path=exercise.gif_local_path
+    )
+
+
+@app.get("/cycles")
+def get_cycles():
+    """
+    Retourne tous les cycles d'entraînement disponibles
+
+    Returns:
+        Liste des cycles avec leurs muscles
+    """
+    return {
+        "cycles": TRAINING_CYCLES,
+        "rotation": [
+            {"day": 1, "cycle": "dos_biceps", "muscles": ["dos", "biceps"]},
+            {"day": 2, "cycle": "pecs_triceps", "muscles": ["pectoraux", "triceps"]},
+            {"day": 3, "cycle": "jambes_abdos", "muscles": ["jambes", "abdos"]}
+        ]
+    }
+
+
+@app.get("/exercises/stats")
+def get_stats(days: int = 30, db: Session = Depends(get_db)):
+    """
+    Statistiques sur les exercices
+
+    Args:
+        days: Période en jours (défaut: 30)
+        db: Session de base de données
+
+    Returns:
+        Statistiques détaillées
+    """
+    from app.Service.WorkoutService import get_exercise_stats
+
+    try:
+        stats = get_exercise_stats(db, days)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=9000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
