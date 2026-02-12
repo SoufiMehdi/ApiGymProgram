@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # LE SERVEUR DE BDD (Partagé)
+  bdd-postgres:
+    image: postgres:latest
+    container_name: bdd-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: mahdi
+      POSTGRES_PASSWORD:
+      POSTGRES_DB: gym_program  # La base par défaut
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - shared-network  # On utilise un nom plus générique
+
+  # TON APP ACTUELLE
+  apigym-app:
+    build: .
+    container_name: apigym-container
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    depends_on:
+      - bdd-postgres
+    networks:
+      - shared-network
+
+# On définit le réseau comme "attachable"
+networks:
+  shared-network:
+    driver: bridge
+    name: shared-network  # Forcer le nom pour que les autres apps le trouvent
+
+volumes:
+  postgres_data:
