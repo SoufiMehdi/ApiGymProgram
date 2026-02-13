@@ -10,8 +10,6 @@ load_dotenv()
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 claude_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY")) if os.getenv("ANTHROPIC_API_KEY") else None
 
-def test_github_action():
-    print("Testing github action")
 
 def generer_programme_gemini(groupes: str, objectif: str = "prise de masse", niveau: str = "intermédiaire",
                              duree: int = 45):
