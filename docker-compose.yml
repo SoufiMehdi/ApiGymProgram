@@ -23,7 +23,7 @@ services:
     container_name: apigym-container
     restart: always
     env_file:
-      - .env
+      - /home/mahdi/apigym_secret.env
     ports:
       - "5000:5000"
     depends_on:
