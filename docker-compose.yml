@@ -19,6 +19,7 @@ services:
 
   # TON APP ACTUELLE
   apigym-app:
+    image: apigym-app:latest
     build: .
     container_name: apigym-container
     restart: always
