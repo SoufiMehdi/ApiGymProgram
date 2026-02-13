@@ -1,0 +1,17 @@
+name: Build sur mon NUC
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build_job:
+    runs-on: self-hosted  # Indique à GitHub d'utiliser ton NUC
+    steps:
+      - name: Recupere le code
+        uses: actions/checkout@v4
+
+      - name: Build l'image Docker
+        run: |
+          docker build -t apigym-app:latest .
+          echo "Le build est terminé avec succès sur le NUC !"
