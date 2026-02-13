@@ -14,4 +14,8 @@ jobs:
       - name: Build l'image Docker
         run: |
           docker build -t apigym-app:latest .
-          echo "Le build est terminé avec succès sur le NUC !"
+          # echo "Le build est terminé avec succès sur le NUC !"
+
+      - name: Relance le conteneur
+        run: |
+          docker compose up -d --remove-orphans
