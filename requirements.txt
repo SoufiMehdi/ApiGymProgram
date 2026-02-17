@@ -8,3 +8,5 @@ pydantic==2.10.5
 psycopg2-binary==2.9.10
 requests==2.31.0
 deep-translator==1.11.4
+# Sécurité
+python-multipart==0.0.9

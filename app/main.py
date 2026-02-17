@@ -17,6 +17,8 @@ from app.Service.ExercisedbService import (
     TRAINING_CYCLES
 )
 
+from app.Service.Auth import verify_api_key
+
 # Créer les tables
 Base.metadata.create_all(bind=engine)
 
@@ -177,7 +179,8 @@ def sync_exercises_for_muscle(
         limit: int = 4,
         equipment: Optional[str] = None,
         balanced: bool = True,
-        db: Session = Depends(get_db)
+        db: Session = Depends(get_db),
+        auth: str = Depends(verify_api_key)
 ):
     """
     Synchronise les exercices depuis ExerciseDB pour un muscle donné
@@ -264,7 +267,10 @@ def sync_exercises_for_muscle(
 
 
 @app.post("/exercises/sync-all")
-def sync_all_exercises(db: Session = Depends(get_db)):
+def sync_all_exercises(
+        db: Session = Depends(get_db),
+        auth: str = Depends(verify_api_key)
+):
     """
     Synchronise tous les exercices pour tous les muscles du cycle
 
